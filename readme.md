@@ -83,18 +83,57 @@ sudo apt install inotify-tools -y
 **Script de surveillance :** `monitor.sh`
 ```bash
 #!/bin/bash
-config_dir="/etc/nginx"
-admin_email="adounvosteve@gmail.com"
 
+# Vérifie si le répertoire de configuration Nginx existe
+CONFIG_DIR="/etc/nginx"
+if [ ! -d "$CONFIG_DIR" ]; then
+    echo "Erreur : Le répertoire $CONFIG_DIR n'existe pas. Vérifiez votre installation Nginx."
+    exit 1
+fi
+
+# E-mail de l'administrateur
+ADMIN_EMAIL="adounvosteve@gmail.com"
+
+# Vérifie si msmtp est installé
+if ! command -v msmtp &>/dev/null; then
+    echo "Erreur : msmtp n'est pas installé. Installez-le avec : sudo apt install msmtp"
+    exit 1
+fi
+
+# Fonction d'envoi d'e-mail avec l'utilisateur responsable
 send_email() {
     local file=$1
-    echo -e "Subject: Modification de configuration - $file\n\nLe fichier de configuration $file a été modifié." | msmtp $admin_email
+    local event=$2
+
+    # Récupérer les informations d'audit pour l'utilisateur ayant effectué la modification
+    EVENT_DETAILS=$(ausearch -k nginx_config_change -f "$file" | tail -n 1)
+    USER=$(echo "$EVENT_DETAILS" | grep -oP 'auid=\K\d+')
+    if [ -z "$USER" ]; then
+        USER="ubuntu"
+    else
+        USERNAME=$(getent passwd "$USER" | cut -d: -f1)
+        USER=$USERNAME
+    fi
+
+    # Construire le message de l'email
+    MESSAGE="🚨 **Alerte Sécurité - Modification de Fichier** 🚨\n\n"
+    MESSAGE+="📂 **Fichier** : $file\n"
+    MESSAGE+="🛠️ **Action** : $event\n"
+    MESSAGE+="👤 **Utilisateur** : $USER\n"
+    MESSAGE+="🖥️ **Serveur** : $(hostname)\n"
+    MESSAGE+="🕒 **Heure** : $(date '+%Y-%m-%d %H:%M:%S')\n\n"
+    MESSAGE+="🔍 Vérifiez les modifications effectuées !"
+
+    # Envoi de l'email
+    echo -e "Subject: [Alerte] Modification de fichier - $file\n\n$MESSAGE" | msmtp "$ADMIN_EMAIL"
 }
 
-inotifywait -m -r -e modify,create,delete $config_dir |
-while read path action file; do
-    send_email "$path$file"
+# Surveille les fichiers de configuration avec inotifywait
+inotifywait -m -r -e modify,create,delete --format '%w%f %e' "$CONFIG_DIR" |
+while read file event; do
+    send_email "$file" "$event"
 done
+
 ```
 
 **Lancer la surveillance :**
